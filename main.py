@@ -17,6 +17,8 @@ import io
 from datetime import datetime
 import os
 from dotenv import load_dotenv
+import numpy as np
+import seaborn as sns
 
 
 
@@ -76,6 +78,84 @@ def writeCSV(new_data, max_rows):
     
     # Save the updated DataFrame to CSV
     df.to_csv("data.csv", index=False)
+
+def standardization(data):
+    mu = np.mean(data)
+    dispersion = np.mean(np.power((data - mu), 2))
+    data_modified = (data - mu) / np.sqrt(dispersion)
+    
+    return data_modified
+
+async def corr(update: Update, context: CallbackContext):
+    user_id = update.message.from_user.id
+    if user_id not in user_data:
+        user_data[user_id] = {}
+        
+    if user_data[user_id].get("tickers", -1) == -1:
+        await update.message.reply_text("You have no tracked tickers.")
+        return
+
+    df = pd.read_csv("data.csv")
+    df['Datetime'] = pd.to_datetime(df['Datetime'], format='%Y-%m-%d %H:%M')
+    
+    # Pivot data to align datetimes across tickers
+    pivot_df = df.pivot(index='Datetime', columns='Ticker', values='Price')
+    pivot_df = pivot_df.resample('min').ffill()
+    
+    # Standardize each ticker's data
+    norm_df = pivot_df.apply(standardization)
+
+    fig1, ax1 = plt.subplots(figsize=(12, 10))
+    for ticker in norm_df.columns:
+        ax1.plot(norm_df.index, norm_df[ticker], label=ticker)
+
+    ax1.set_xlabel("Datetime", fontsize=16)
+    ax1.set_ylabel("Standardized Price", fontsize=16)
+    ax1.legend(loc='best', fontsize=12)
+    ax1.set_title("Standardized Prices Over Time", fontsize=20)
+    ax1.grid()
+    plt.tight_layout()
+
+    # Save the first plot to a buffer
+    buf1 = io.BytesIO()
+    plt.savefig(buf1, format='png')
+    buf1.seek(0)
+    plt.close()
+
+    # Create the second plot (correlation matrix)
+    corr_matrix = norm_df.corr(method='pearson')
+    fig2, ax2 = plt.subplots(figsize=(12, 10))
+    sns.heatmap(corr_matrix, annot=True, ax=ax2, annot_kws={'size': 30}, fmt='.2f', 
+                cmap='coolwarm', linewidths=0.5, linecolor='black')
+    ax2.set_title('Correlation Matrix', fontsize=20)
+    ax2.set_xlabel('') 
+    ax2.set_ylabel('') 
+    ax2.tick_params(axis='x', labelsize=26, rotation=45)
+    ax2.tick_params(axis='y', labelsize=26, rotation=0) 
+    plt.tight_layout()
+
+    # Save the second plot to a buffer
+    buf2 = io.BytesIO()
+    plt.savefig(buf2, format='png')
+    buf2.seek(0)
+    plt.close()
+
+    # Send the first plot
+    await context.bot.send_photo(
+        chat_id=update.message.chat_id,
+        photo=InputFile(buf1, filename='plot1.png')
+    )
+
+    # Send the second plot
+    await context.bot.send_photo(
+        chat_id=update.message.chat_id,
+        photo=InputFile(buf2, filename='plot2.png')
+    )
+
+
+    # Close buffers
+    buf1.close()
+    buf2.close()
 
 async def errorHandler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log the error and send a message to the user."""
@@ -268,7 +348,12 @@ async def plot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in user_data:
         user_data[user_id] = {}
 
-    tickers = set(ticker.strip().upper() for ticker in update.message.text.split(","))
+    if update.message.text == "all":
+        tickers = user_data[user_id]["tickers"]
+    else:
+        tickers = set(ticker.strip().upper() for ticker in update.message.text.split(","))
+
+
     if tickers:
         df = pd.read_csv("data.csv")
         df['Datetime'] = pd.to_datetime(df["Datetime"], format='%Y-%m-%d %H:%M')
@@ -276,7 +361,11 @@ async def plot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         df_sorted = df.sort_values(by=['Ticker', 'Datetime'])
         grouped = df_sorted.groupby('Ticker')
 
-        fig, axs = plt.subplots(len(tickers), figsize=(24,30))   
+        if len(tickers) > 1:
+            fig, axs = plt.subplots(len(tickers), figsize=(18,28)) 
+        else:
+            fig, axs = plt.subplots(len(tickers), figsize=(24,22)) 
+        fig.subplots_adjust(hspace=0.5)
 
         counter = 0
         for ticker, group in grouped:
@@ -286,20 +375,21 @@ async def plot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 if len(tickers) > 1:
                     axs[counter].plot(x, y, label=f"{ticker}")
-                    axs[counter].set_xlabel("Datetime", fontsize=24)
-                    axs[counter].set_ylabel(r"Price", fontsize=24)
-                    axs[counter].tick_params(axis='both', labelsize=24) 
-                    axs[counter].legend(loc='best', fontsize=30)
-                    axs[counter].grid()
+                    axs[counter].set_xlabel("Datetime", fontsize=16)
+                    axs[counter].set_ylabel(r"Price", fontsize=16)
+                    axs[counter].tick_params(axis='both', labelsize=12) 
+                    axs[counter].legend(loc='best', fontsize=14)
+                    axs[counter].grid(True, linestyle='--', linewidth=0.5, color='lightgray')
                 else:
                     axs.plot(x, y, label=f"{ticker}")
-                    axs.set_xlabel("Datetime", fontsize=24)
-                    axs.set_ylabel(r"Price", fontsize=24)
-                    axs.tick_params(axis='both', labelsize=24) 
+                    axs.set_xlabel("Datetime", fontsize=30)
+                    axs.set_ylabel(r"Price", fontsize=30)
+                    axs.tick_params(axis='both', labelsize=20) 
                     axs.legend(loc='best', fontsize=30)
-                    axs.grid()
-                plt.tight_layout()
+                    axs.grid(True, linestyle='--', linewidth=0.5, color='lightgray')
                 counter += 1
+
+        plt.tight_layout()
         
         buf = io.BytesIO()
         plt.savefig(buf, format='png')
@@ -312,7 +402,7 @@ async def plot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("You have no tracked tickers.")
     
-
+    
 def main():
     application = Application.builder().token(TOKEN).build()
 
@@ -335,6 +425,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("check", check))
     application.add_handler(CommandHandler("clear", clear))
+    application.add_handler(CommandHandler("corr", corr))
     application.add_handler(conversation_handler)
 
     application.add_error_handler(errorHandler)
